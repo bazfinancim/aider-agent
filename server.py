@@ -1,9 +1,11 @@
-import os, json, subprocess, urllib.request, urllib.error
+import os, json, subprocess, urllib.request, urllib.error, base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_KEY   = os.environ.get("GROQ_API_KEY", "")
 GH_PAT     = os.environ.get("GITHUB_PAT", "")
+
+print(f"ENV CHECK: GEMINI={'SET' if GEMINI_KEY else 'MISSING'}, GROQ={'SET' if GROQ_KEY else 'MISSING'}, GH={'SET' if GH_PAT else 'MISSING'}")
 
 def gemini(prompt, model="gemini-2.0-flash"):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
@@ -22,21 +24,17 @@ def groq(prompt, model="llama-3.3-70b-versatile"):
         return d["choices"][0]["message"]["content"]
 
 def github_push(repo, filename, content, message="Update by CodeX"):
-    import base64
     url = f"https://api.github.com/repos/bazfinancim/{repo}/contents/{filename}"
-    # check if exists
     get_req = urllib.request.Request(url, headers={"Authorization":f"token {GH_PAT}","User-Agent":"CodeX"})
     sha = ""
     try:
         with urllib.request.urlopen(get_req, timeout=10) as r:
             sha = json.loads(r.read()).get("sha","")
     except: pass
-    
     encoded = base64.b64encode(content.encode()).decode()
     payload = {"message":message,"content":encoded}
     if sha: payload["sha"] = sha
-    
-    put_req = urllib.request.Request(url, 
+    put_req = urllib.request.Request(url,
         data=json.dumps(payload).encode(),
         headers={"Authorization":f"token {GH_PAT}","Content-Type":"application/json","User-Agent":"CodeX"},
         method="PUT")
@@ -52,8 +50,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({
             "status":"ready","name":"CodeX Dev Agent — Master Baz",
-            "version":"4.0","engines":["gemini-2.0-flash","llama-3.3-70b"],
-            "actions":["generate","execute","push","full"]
+            "version":"4.1","engines":["gemini-2.0-flash","llama-3.3-70b"],
+            "actions":["generate","execute","push","full","chat"],
+            "env":{"gemini":"SET" if GEMINI_KEY else "MISSING","groq":"SET" if GROQ_KEY else "MISSING","github":"SET" if GH_PAT else "MISSING"}
         }).encode())
 
     def do_POST(self):
@@ -73,7 +72,6 @@ class Handler(BaseHTTPRequestHandler):
             if action == "generate":
                 code = ask(f"Generate {lang} code ONLY (no explanation, no markdown):\n{task}")
                 result = {"code":code}
-
             elif action == "execute":
                 code = body.get("code","")
                 path = f"/tmp/run.{lang[:2]}"
@@ -81,15 +79,12 @@ class Handler(BaseHTTPRequestHandler):
                 cmd = {"python":"python3","javascript":"node","bash":"bash"}.get(lang,"python3")
                 r = subprocess.run([cmd,path],capture_output=True,text=True,timeout=30)
                 result = {"output":r.stdout,"error":r.stderr}
-
             elif action == "push":
                 code = body.get("code","")
                 pushed = github_push(repo, filename, code, f"CodeX: {task[:50]}")
                 result = {"pushed":True,"url":pushed.get("content",{}).get("html_url","")}
-
             elif action == "full":
-                prompt = f"Generate {lang} code ONLY for: {task}"
-                code = ask(prompt)
+                code = ask(f"Generate {lang} code ONLY for: {task}")
                 output = ""
                 if lang == "python":
                     path="/tmp/run.py"; open(path,"w").write(code)
@@ -100,9 +95,10 @@ class Handler(BaseHTTPRequestHandler):
                     pushed = github_push(repo, filename, code, f"CodeX: {task[:50]}")
                     pushed_url = pushed.get("content",{}).get("html_url","")
                 result = {"code":code,"output":output,"github":pushed_url}
-
             elif action == "chat":
                 result = {"response": ask(task)}
+            else:
+                result = {"error": f"Unknown action: {action}"}
 
             self.send_response(200)
             self.send_header("Content-Type","application/json")
@@ -117,5 +113,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__=="__main__":
     port = int(os.environ.get("PORT",10000))
-    print(f"CodeX Dev Agent v4.0 — port {port}")
+    print(f"CodeX Dev Agent v4.1 — port {port}")
     HTTPServer(("0.0.0.0",port),Handler).serve_forever()
