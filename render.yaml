@@ -1,9 +1,8 @@
 services:
-  - type: worker
+  - type: web
     name: aider-agent
-    env: python
-    buildCommand: pip install aider-chat
-    startCommand: python server.py
+    env: docker
+    plan: free
     envVars:
       - key: GEMINI_API_KEY
         sync: false
