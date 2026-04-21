@@ -1,12 +1,1 @@
-FROM python:3.11-slim
-
-RUN pip install aider-chat flask gunicorn
-
-WORKDIR /app
-
-COPY server.py .
-COPY requirements.txt .
-
-EXPOSE 10000
-
-CMD ["python", "server.py"]
+FROM python:3.11-slim\n\nRUN apt-get update && apt-get install -y git\n\nRUN pip install --no-cache-dir aider-chat\n\nWORKDIR /app\n\nCOPY server.py .\n\nEXPOSE 10000\n\nCMD ["python", "server.py"]
