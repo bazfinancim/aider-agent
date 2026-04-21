@@ -1,17 +1,41 @@
 import os
+import json
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
+import urllib.request
+import urllib.error
 
-MODELS = {
-    "gemini": "gemini/gemini-2.0-flash",
-    "claude": "anthropic/claude-3-5-sonnet-20241022",
-    "gpt4": "openai/gpt-4o",
-    "groq": "groq/llama-3.3-70b-versatile",
-    "default": "gemini/gemini-2.0-flash"
-}
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
 
-class AiderHandler(BaseHTTPRequestHandler):
+def ask_gemini(prompt):
+    """שליחת prompt ל-Gemini ישירות"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}]
+    }).encode()
+    req = urllib.request.Request(url, data=payload,
+                                  headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        return f"Error: {e}"
+
+def run_code(code, language="python"):
+    """הרצת קוד"""
+    ext = {"python": "py", "javascript": "js", "bash": "sh"}.get(language, "py")
+    path = f"/tmp/codex_run.{ext}"
+    with open(path, "w") as f:
+        f.write(code)
+    cmd = {"python": ["python3", path], "javascript": ["node", path], 
+           "bash": ["bash", path]}.get(language, ["python3", path])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return result.stdout + result.stderr
+
+class CodeXAgentHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
@@ -21,62 +45,54 @@ class AiderHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({
             "status": "ready",
-            "name": "Aider Agent — Master Baz",
-            "models": list(MODELS.keys()),
-            "version": "2.0"
+            "name": "CodeX Aider Agent — Master Baz v3.0",
+            "capabilities": ["code_generation", "code_execution", "github_push"],
+            "model": "gemini-2.0-flash"
         }).encode())
 
     def do_POST(self):
         try:
-            length = int(self.headers["Content-Length"])
-            body = json.loads(self.rfile.read(length))
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            
             task = body.get("task", "")
-            model_key = body.get("model", "default")
-            repo_url = body.get("repo", "")
-            model = MODELS.get(model_key, MODELS["default"])
+            action = body.get("action", "generate")  # generate | execute | full
+            language = body.get("language", "python")
+            repo = body.get("repo", "")
+            filename = body.get("filename", "output.py")
 
-            env = os.environ.copy()
+            result = {}
 
-            # הגדרת env vars לפי מודל
-            gemini_key = env.get("GEMINI_API_KEY", "")
-            anthropic_key = env.get("ANTHROPIC_API_KEY", "")
-            openai_key = env.get("OPENAI_API_KEY", "")
-            groq_key = env.get("GROQ_API_KEY", "")
+            if action == "generate":
+                prompt = f"""You are an expert developer. Generate {language} code for this task:
+{task}
 
-            work_dir = "/tmp/aider_workspace"
-            os.makedirs(work_dir, exist_ok=True)
+Return ONLY the code, no explanation, no markdown blocks."""
+                code = ask_gemini(prompt)
+                result = {"action": "generate", "code": code, "language": language}
 
-            # clone repo אם נשלח
-            if repo_url:
-                subprocess.run(
-                    ["git", "clone", repo_url, work_dir],
-                    capture_output=True, env=env
-                )
+            elif action == "execute":
+                code = body.get("code", "")
+                output = run_code(code, language)
+                result = {"action": "execute", "output": output}
 
-            cmd = [
-                "aider",
-                "--model", model,
-                "--message", task,
-                "--yes",
-                "--no-git" if not repo_url else "",
-            ]
-            cmd = [c for c in cmd if c]
+            elif action == "full":
+                # generate + execute
+                prompt = f"""Generate {language} code for: {task}
+Return ONLY the code."""
+                code = ask_gemini(prompt)
+                output = run_code(code, language)
+                result = {"action": "full", "code": code, "output": output}
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True,
-                cwd=work_dir, timeout=300, env=env
-            )
+            elif action == "chat":
+                # שיחה חופשית
+                response = ask_gemini(task)
+                result = {"action": "chat", "response": response}
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "done",
-                "model": model,
-                "output": result.stdout[-3000:],
-                "error": result.stderr[-500:] if result.stderr else ""
-            }).encode())
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
 
         except Exception as e:
             self.send_response(500)
@@ -86,6 +102,6 @@ class AiderHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"Aider Agent v2.0 running on port {port}")
-    server = HTTPServer(("0.0.0.0", port), AiderHandler)
+    print(f"CodeX Agent v3.0 running on port {port}")
+    server = HTTPServer(("0.0.0.0", port), CodeXAgentHandler)
     server.serve_forever()
