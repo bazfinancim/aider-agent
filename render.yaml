@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: aider-agent
+    env: python
+    buildCommand: pip install aider-chat
+    startCommand: python server.py
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GITHUB_PAT
+        sync: false
