@@ -1,3 +1,2 @@
-aider-chat
-flask
-gunicorn
+aider-chat==0.82.0
+flask==3.0.0
