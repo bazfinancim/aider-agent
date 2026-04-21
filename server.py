@@ -1,107 +1,121 @@
-import os
-import json
-import subprocess
+import os, json, subprocess, urllib.request, urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import urllib.request
-import urllib.error
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GITHUB_PAT = os.environ.get("GITHUB_PAT", "")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+GROQ_KEY   = os.environ.get("GROQ_API_KEY", "")
+GH_PAT     = os.environ.get("GITHUB_PAT", "")
 
-def ask_gemini(prompt):
-    """שליחת prompt ל-Gemini ישירות"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}]
-    }).encode()
-    req = urllib.request.Request(url, data=payload,
-                                  headers={"Content-Type": "application/json"})
+def gemini(prompt, model="gemini-2.0-flash"):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+    body = json.dumps({"contents":[{"parts":[{"text":prompt}]}]}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type":"application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        d = json.loads(r.read())
+        return d["candidates"][0]["content"]["parts"][0]["text"]
+
+def groq(prompt, model="llama-3.3-70b-versatile"):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    body = json.dumps({"model":model,"messages":[{"role":"user","content":prompt}],"max_tokens":4000}).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type":"application/json","Authorization":f"Bearer {GROQ_KEY}"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        d = json.loads(r.read())
+        return d["choices"][0]["message"]["content"]
+
+def github_push(repo, filename, content, message="Update by CodeX"):
+    import base64
+    url = f"https://api.github.com/repos/bazfinancim/{repo}/contents/{filename}"
+    # check if exists
+    get_req = urllib.request.Request(url, headers={"Authorization":f"token {GH_PAT}","User-Agent":"CodeX"})
+    sha = ""
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        return f"Error: {e}"
+        with urllib.request.urlopen(get_req, timeout=10) as r:
+            sha = json.loads(r.read()).get("sha","")
+    except: pass
+    
+    encoded = base64.b64encode(content.encode()).decode()
+    payload = {"message":message,"content":encoded}
+    if sha: payload["sha"] = sha
+    
+    put_req = urllib.request.Request(url, 
+        data=json.dumps(payload).encode(),
+        headers={"Authorization":f"token {GH_PAT}","Content-Type":"application/json","User-Agent":"CodeX"},
+        method="PUT")
+    with urllib.request.urlopen(put_req, timeout=15) as r:
+        return json.loads(r.read())
 
-def run_code(code, language="python"):
-    """הרצת קוד"""
-    ext = {"python": "py", "javascript": "js", "bash": "sh"}.get(language, "py")
-    path = f"/tmp/codex_run.{ext}"
-    with open(path, "w") as f:
-        f.write(code)
-    cmd = {"python": ["python3", path], "javascript": ["node", path], 
-           "bash": ["bash", path]}.get(language, ["python3", path])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    return result.stdout + result.stderr
-
-class CodeXAgentHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
 
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type","application/json")
         self.end_headers()
         self.wfile.write(json.dumps({
-            "status": "ready",
-            "name": "CodeX Aider Agent — Master Baz v3.0",
-            "capabilities": ["code_generation", "code_execution", "github_push"],
-            "model": "gemini-2.0-flash"
+            "status":"ready","name":"CodeX Dev Agent — Master Baz",
+            "version":"4.0","engines":["gemini-2.0-flash","llama-3.3-70b"],
+            "actions":["generate","execute","push","full"]
         }).encode())
 
     def do_POST(self):
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length)) if length else {}
-            
-            task = body.get("task", "")
-            action = body.get("action", "generate")  # generate | execute | full
-            language = body.get("language", "python")
-            repo = body.get("repo", "")
-            filename = body.get("filename", "output.py")
+            n = int(self.headers.get("Content-Length",0))
+            body = json.loads(self.rfile.read(n)) if n else {}
+            task     = body.get("task","")
+            action   = body.get("action","generate")
+            lang     = body.get("language","python")
+            repo     = body.get("repo","")
+            filename = body.get("filename","output.py")
+            engine   = body.get("engine","gemini")
 
+            ask = gemini if engine=="gemini" else groq
             result = {}
 
             if action == "generate":
-                prompt = f"""You are an expert developer. Generate {language} code for this task:
-{task}
-
-Return ONLY the code, no explanation, no markdown blocks."""
-                code = ask_gemini(prompt)
-                result = {"action": "generate", "code": code, "language": language}
+                code = ask(f"Generate {lang} code ONLY (no explanation, no markdown):\n{task}")
+                result = {"code":code}
 
             elif action == "execute":
-                code = body.get("code", "")
-                output = run_code(code, language)
-                result = {"action": "execute", "output": output}
+                code = body.get("code","")
+                path = f"/tmp/run.{lang[:2]}"
+                open(path,"w").write(code)
+                cmd = {"python":"python3","javascript":"node","bash":"bash"}.get(lang,"python3")
+                r = subprocess.run([cmd,path],capture_output=True,text=True,timeout=30)
+                result = {"output":r.stdout,"error":r.stderr}
+
+            elif action == "push":
+                code = body.get("code","")
+                pushed = github_push(repo, filename, code, f"CodeX: {task[:50]}")
+                result = {"pushed":True,"url":pushed.get("content",{}).get("html_url","")}
 
             elif action == "full":
-                # generate + execute
-                prompt = f"""Generate {language} code for: {task}
-Return ONLY the code."""
-                code = ask_gemini(prompt)
-                output = run_code(code, language)
-                result = {"action": "full", "code": code, "output": output}
+                prompt = f"Generate {lang} code ONLY for: {task}"
+                code = ask(prompt)
+                output = ""
+                if lang == "python":
+                    path="/tmp/run.py"; open(path,"w").write(code)
+                    r=subprocess.run(["python3",path],capture_output=True,text=True,timeout=30)
+                    output = r.stdout + r.stderr
+                pushed_url = ""
+                if repo:
+                    pushed = github_push(repo, filename, code, f"CodeX: {task[:50]}")
+                    pushed_url = pushed.get("content",{}).get("html_url","")
+                result = {"code":code,"output":output,"github":pushed_url}
 
             elif action == "chat":
-                # שיחה חופשית
-                response = ask_gemini(task)
-                result = {"action": "chat", "response": response}
+                result = {"response": ask(task)}
 
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type","application/json")
             self.end_headers()
-            self.wfile.write(json.dumps(result, ensure_ascii=False).encode())
+            self.wfile.write(json.dumps(result,ensure_ascii=False).encode())
 
         except Exception as e:
             self.send_response(500)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type","application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self.wfile.write(json.dumps({"error":str(e)}).encode())
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"CodeX Agent v3.0 running on port {port}")
-    server = HTTPServer(("0.0.0.0", port), CodeXAgentHandler)
-    server.serve_forever()
+if __name__=="__main__":
+    port = int(os.environ.get("PORT",10000))
+    print(f"CodeX Dev Agent v4.0 — port {port}")
+    HTTPServer(("0.0.0.0",port),Handler).serve_forever()
