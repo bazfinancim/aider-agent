@@ -1,10 +1,14 @@
 services:
   - type: web
     name: aider-agent
-    env: docker
+    env: python
     plan: free
+    buildCommand: pip install flask
+    startCommand: python server.py
     envVars:
       - key: GEMINI_API_KEY
         sync: false
       - key: GITHUB_PAT
+        sync: false
+      - key: GROQ_API_KEY
         sync: false
