@@ -21,11 +21,12 @@ def call_openrouter(prompt, model="meta-llama/llama-3.3-70b-instruct:free"):
         return json.loads(r.read())["choices"][0]["message"]["content"]
 
 def call_claude(prompt):
+    key = os.environ.get("CLAUDE_API_KEY", CLAUDE_KEY)
     url = "https://api.anthropic.com/v1/messages"
     body = json.dumps({"model":os.environ.get("CLAUDE_MODEL","claude-haiku-4-5"),"max_tokens":2000,"messages":[{"role":"user","content":prompt}]}).encode()
     req = urllib.request.Request(url, data=body, headers={
         "Content-Type":"application/json",
-        "x-api-key":CLAUDE_KEY,
+        "x-api-key":key,
         "anthropic-version":"2023-06-01"
     })
     with urllib.request.urlopen(req, timeout=60) as r:
